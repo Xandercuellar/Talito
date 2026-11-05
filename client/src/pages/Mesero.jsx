@@ -59,10 +59,11 @@ function DialogoAgregar({ onAgregar, onCancelar }) {
   );
 }
 
-function DialogoNuevaOrden({ onCrear, onCancelar }) {
+function DialogoNuevaOrden({ onCrear, onCancelar, esAdmin = false, meseros = [] }) {
   const [menu, setMenu] = useState(null);
   const [mesa, setMesa] = useState('');
   const [nombre, setNombre] = useState('');
+  const [meseroId, setMeseroId] = useState('');
   const [cantidades, setCantidades] = useState({});
   const [notas, setNotas] = useState({});
   const [enviando, setEnviando] = useState(false);
@@ -97,7 +98,7 @@ function DialogoNuevaOrden({ onCrear, onCancelar }) {
     }));
 
     try {
-      await onCrear({ mesa: Number(mesa), nombre: nombre.trim(), items });
+      await onCrear({ mesa: Number(mesa), nombre: nombre.trim(), items, meseroId });
     } finally {
       setEnviando(false);
     }
@@ -117,6 +118,18 @@ function DialogoNuevaOrden({ onCrear, onCancelar }) {
           <input id="no-nombre" type="text" maxLength={40} required placeholder="Nombre del cliente" value={nombre} onChange={(e) => setNombre(e.target.value)} />
         </div>
       </div>
+
+      {esAdmin && (
+        <div className="campo" style={{ marginBottom: 12 }}>
+          <label htmlFor="no-mesero">Asignar a mesero</label>
+          <select id="no-mesero" value={meseroId} onChange={(e) => setMeseroId(e.target.value)}>
+            <option value="">(Asignación automática al mesero con menor carga)</option>
+            {meseros.map((m) => (
+              <option key={m.id} value={m.id}>{m.nombre}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div style={{ maxHeight: '350px', overflowY: 'auto', margin: '12px 0', border: '1px solid var(--line)', borderRadius: '8px', padding: '10px' }}>
         {menu.map((cat) => (
@@ -162,29 +175,36 @@ function DialogoNuevaOrden({ onCrear, onCancelar }) {
 }
 
 export default function Mesero() {
-  const [datos, setDatos] = useState({ misPedidos: [], sinAsignar: [], llamadas: [], todos: [] });
+  const [datos, setDatos] = useState({ misPedidos: [], asignados: [], sinAsignar: [], llamadas: [], todos: [] });
   const [cargado, setCargado] = useState(false);
   const [sinRed, setSinRed] = useState(false);
   const [tab, setTab] = useState('mis-mesas'); // 'mis-mesas' | 'sin-asignar' | 'llamadas'
+  const [filtroMesero, setFiltroMesero] = useState('');
+  const [meseros, setMeseros] = useState([]);
   const [pedidoParaAgregar, setPedidoParaAgregar] = useState(null);
   const [dlgNuevaOrden, setDlgNuevaOrden] = useState(false);
   const [trabajando, setTrabajando] = useState(false);
 
   const { usuario, salir } = useAuth();
+  const esAdmin = usuario?.rol === 'admin';
   const { toast, aviso } = useToast();
   const avisoRef = useRef(aviso);
   avisoRef.current = aviso;
 
   const cargar = useCallback(async () => {
     try {
-      const d = await api('/mesero');
+      const [d, m] = await Promise.all([
+        api('/mesero'),
+        esAdmin ? api('/meseros').catch(() => []) : Promise.resolve([]),
+      ]);
       setDatos(d);
+      if (esAdmin) setMeseros(m);
       setCargado(true);
       setSinRed(false);
     } catch (e) {
       if (e.status !== 401) setSinRed(true);
     }
-  }, []);
+  }, [esAdmin]);
   usePolling(cargar, 5000);
 
   async function ejecutar(accion) {
@@ -200,8 +220,15 @@ export default function Mesero() {
   }
 
   const tomarMesa = (p) => ejecutar(async () => {
+    if (esAdmin) return;
     await api(`/pedidos/${p.id}/mesero`, { method: 'PATCH', body: { meseroId: usuario.sub } });
     aviso(`Mesa ${p.mesa} asignada a ti.`);
+  });
+
+  const asignarAMesero = (p, meseroId) => ejecutar(async () => {
+    await api(`/pedidos/${p.id}/mesero`, { method: 'PATCH', body: { meseroId } });
+    const mNom = meseros.find((m) => m.id === meseroId)?.nombre || 'mesero';
+    aviso(`Mesa ${p.mesa} asignada a ${mNom}.`);
   });
 
   const atenderLlamada = (l) => ejecutar(async () => {
@@ -215,13 +242,19 @@ export default function Mesero() {
     aviso('Platillo agregado a la mesa.');
   });
 
-  const crearOrden = ({ mesa, nombre, items }) => ejecutar(async () => {
+  const crearOrden = ({ mesa, nombre, items, meseroId }) => ejecutar(async () => {
+    const targetMesero = esAdmin ? (meseroId ? Number(meseroId) : null) : usuario.sub;
     await api('/pedidos', {
       method: 'POST',
-      body: { mesa, nombre, items, meseroId: usuario.sub },
+      body: { mesa, nombre, items, meseroId: targetMesero },
     });
     setDlgNuevaOrden(false);
-    aviso(`Orden creada para Mesa ${mesa} y asignada a ti.`);
+    if (esAdmin) {
+      const mNom = meseros.find((m) => m.id === targetMesero)?.nombre;
+      aviso(`Orden creada para Mesa ${mesa}${mNom ? ` y asignada a ${mNom}` : ' (asignada automáticamente)'}.`);
+    } else {
+      aviso(`Orden creada para Mesa ${mesa} y asignada a ti.`);
+    }
   });
 
   const descargarPrecuenta = (p) => {
@@ -230,7 +263,7 @@ export default function Mesero() {
       {
         ...p,
         total,
-        meseroNombre: p.meseroNombre || usuario.nombre,
+        meseroNombre: p.meseroNombre || (esAdmin ? 'Personal de servicio' : usuario.nombre),
       },
       { esPrecuenta: true, autoDescargar: true },
     );
@@ -238,8 +271,13 @@ export default function Mesero() {
   };
 
   const mis = datos.misPedidos;
+  const asignados = datos.asignados ?? [];
   const sin = datos.sinAsignar;
   const llamadas = datos.llamadas;
+
+  const pedidosAMostrar = esAdmin
+    ? (filtroMesero ? asignados.filter((p) => String(p.meseroId) === String(filtroMesero)) : asignados)
+    : mis;
 
   return (
     <>
@@ -294,7 +332,7 @@ export default function Mesero() {
             className={`pestana-btn ${tab === 'mis-mesas' ? 'activa' : ''}`}
             onClick={() => setTab('mis-mesas')}
           >
-            Mis mesas asignadas ({mis.length})
+            {esAdmin ? `Órdenes asignadas (${asignados.length})` : `Mis mesas asignadas (${mis.length})`}
           </button>
           <button
             type="button"
@@ -312,21 +350,58 @@ export default function Mesero() {
           </button>
         </div>
 
-        {/* Tab 1: Mis Mesas Asignadas */}
+        {/* Tab 1: Mesas Asignadas */}
         {tab === 'mis-mesas' && (
           <div>
+            {esAdmin && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16, background: '#f8fafc', border: '1px solid var(--line)', padding: '10px 16px', borderRadius: 8 }}>
+                <div>
+                  <strong style={{ fontSize: '0.95rem', color: 'var(--cafe)' }}>Supervisión de mesas</strong>
+                  <p style={{ margin: '2px 0 0', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                    Visualiza las órdenes activas asignadas a cada mesero.
+                  </p>
+                </div>
+                {meseros.length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.88rem' }}>
+                    <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Filtrar por mesero:</span>
+                    <select
+                      style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: '#fff' }}
+                      value={filtroMesero}
+                      onChange={(e) => setFiltroMesero(e.target.value)}
+                    >
+                      <option value="">Todos los meseros ({asignados.length})</option>
+                      {meseros.map((m) => {
+                        const cant = asignados.filter((p) => p.meseroId === m.id).length;
+                        return (
+                          <option key={m.id} value={m.id}>
+                            {m.nombre} ({cant})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                )}
+              </div>
+            )}
+
             {!cargado ? (
               <p className="cargando">Cargando pedidos…</p>
-            ) : mis.length === 0 ? (
+            ) : pedidosAMostrar.length === 0 ? (
               <div className="panel centro" style={{ padding: '40px 20px' }}>
-                <p className="vacio" style={{ fontSize: '1.1rem' }}>No tienes mesas asignadas en este momento.</p>
+                <p className="vacio" style={{ fontSize: '1.1rem' }}>
+                  {esAdmin
+                    ? (filtroMesero ? 'Este mesero no tiene mesas asignadas actualmente.' : 'No hay mesas asignadas a ningún mesero.')
+                    : 'No tienes mesas asignadas en este momento.'}
+                </p>
                 <p style={{ color: 'var(--muted)', marginTop: 8 }}>
-                  Puedes tomar una orden con el botón <strong>+ Tomar orden</strong> o asignarte una mesa de la pestaña &quot;Mesas sin mesero&quot;.
+                  {esAdmin
+                    ? 'Las órdenes tomadas por clientes o meseros aparecerán aquí asignadas a su respectivo mesero.'
+                    : 'Puedes tomar una orden con el botón + Tomar orden o asignarte una mesa de la pestaña "Mesas sin mesero".'}
                 </p>
               </div>
             ) : (
               <div className="grid-mesero">
-                {mis.map((p) => {
+                {pedidosAMostrar.map((p) => {
                   const total = sumar(p.items);
                   const esLista = p.estado === 'lista';
                   return (
@@ -344,6 +419,25 @@ export default function Mesero() {
                           <span className={`badge ${esLista ? 'ok' : 'off'}`} style={{ fontWeight: 800 }}>
                             {ETIQUETA[p.estado] ?? p.estado}
                           </span>
+                        </div>
+
+                        {/* Mostrar mesero a cargo */}
+                        <div style={{ background: '#f8fafc', border: '1px solid var(--line)', padding: '6px 10px', borderRadius: 6, fontSize: '0.85rem', margin: '8px 0 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>Mesero a cargo: <strong style={{ color: 'var(--cafe)' }}>{p.meseroNombre || 'Sin mesero'}</strong></span>
+                          {esAdmin && meseros.length > 0 && (
+                            <select
+                              style={{ fontSize: '0.8rem', padding: '3px 8px', borderRadius: 4, border: '1px solid var(--line)', background: '#fff' }}
+                              value={p.meseroId ?? ''}
+                              disabled={trabajando}
+                              onChange={(e) => asignarAMesero(p, Number(e.target.value))}
+                              title="Reasignar a otro mesero"
+                            >
+                              <option value="" disabled>Reasignar…</option>
+                              {meseros.map((m) => (
+                                <option key={m.id} value={m.id}>{m.nombre}</option>
+                              ))}
+                            </select>
+                          )}
                         </div>
 
                         {esLista && (
@@ -442,14 +536,39 @@ export default function Mesero() {
                           <small>Total de la cuenta</small>
                           <strong>{dinero(total)}</strong>
                         </div>
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-block"
-                          disabled={trabajando}
-                          onClick={() => tomarMesa(p)}
-                        >
-                          Atender esta mesa / Asignármela
-                        </button>
+                        {esAdmin ? (
+                          <div style={{ marginTop: 8 }}>
+                            <small style={{ display: 'block', marginBottom: 4, color: 'var(--muted)', fontSize: '0.8rem', fontWeight: 600 }}>
+                              Asignar a un mesero:
+                            </small>
+                            <select
+                              className="btn-block"
+                              style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--line)', background: '#fff' }}
+                              defaultValue=""
+                              disabled={trabajando || meseros.length === 0}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  asignarAMesero(p, Number(e.target.value));
+                                  e.target.value = '';
+                                }
+                              }}
+                            >
+                              <option value="" disabled>Seleccionar mesero…</option>
+                              {meseros.map((m) => (
+                                <option key={m.id} value={m.id}>{m.nombre}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-block"
+                            disabled={trabajando}
+                            onClick={() => tomarMesa(p)}
+                          >
+                            Atender esta mesa / Asignármela
+                          </button>
+                        )}
                       </div>
                     </article>
                   );
@@ -505,6 +624,8 @@ export default function Mesero() {
         <DialogoNuevaOrden
           onCancelar={() => setDlgNuevaOrden(false)}
           onCrear={crearOrden}
+          esAdmin={esAdmin}
+          meseros={meseros}
         />
       </Dialogo>
 

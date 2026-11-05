@@ -298,11 +298,15 @@ rutasOperacion.get('/mesero', permitirMesero, async (req, res) => {
     ),
   ]);
 
-  const misPedidos = todosActivos.filter((p) => p.meseroId === idUsuario || (!esSoloMesero && p.meseroId));
+  // Si es mesero, solo sus propios pedidos asignados.
+  // Si es administrador, NO tiene pedidos asignados a sí mismo (misPedidos = []), pero ve todas las órdenes asignadas a los meseros.
+  const misPedidos = esSoloMesero ? todosActivos.filter((p) => p.meseroId === idUsuario) : [];
+  const asignados = todosActivos.filter((p) => p.meseroId);
   const sinAsignar = todosActivos.filter((p) => !p.meseroId);
 
   res.json({
     misPedidos,
+    asignados,
     sinAsignar,
     llamadas: llamadas.rows,
     todos: todosActivos,
@@ -312,12 +316,15 @@ rutasOperacion.get('/mesero', permitirMesero, async (req, res) => {
 /** Asigna o reasigna un mesero a una orden y a todas las órdenes abiertas de la misma mesa */
 rutasOperacion.patch('/pedidos/:id/mesero', permitirMesero, async (req, res) => {
   const id = entero(req.params.id, 'id', 1, 2_000_000_000);
-  let meseroId = req.body?.meseroId !== undefined ? req.body.meseroId : req.usuario.sub;
+  let meseroId = req.body?.meseroId !== undefined
+    ? req.body.meseroId
+    : (req.usuario.rol === 'mesero' ? req.usuario.sub : null);
   
   if (meseroId !== null) {
     meseroId = entero(meseroId, 'mesero', 1, 2_000_000_000);
-    const { rows: u } = await query("SELECT id FROM usuarios WHERE id = $1 AND rol IN ('mesero', 'admin')", [meseroId]);
-    if (!u[0]) throw new ErrorHttp(422, 'El mesero especificado no existe o no tiene ese rol.');
+    // SOLO se permite asignar a usuarios con rol 'mesero' (NUNCA a administradores)
+    const { rows: u } = await query("SELECT id FROM usuarios WHERE id = $1 AND rol = 'mesero'", [meseroId]);
+    if (!u[0]) throw new ErrorHttp(422, 'Solo se puede asignar mesas a usuarios con rol de mesero.');
   }
 
   const { rows: ped } = await query('SELECT mesa, estado FROM pedidos WHERE id = $1', [id]);

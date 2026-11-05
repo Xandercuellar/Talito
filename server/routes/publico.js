@@ -70,18 +70,25 @@ rutasPublicas.post(
     // Si la mesa ya tiene órdenes abiertas con un mesero asignado, se le asocia automáticamente
     // para mantener la mesa y sus órdenes con el mismo mesero hasta cobrar y cerrar cuenta.
     const { rows: mesaActiva } = await query(
-      "SELECT mesero_id FROM pedidos WHERE mesa = $1 AND estado != 'cobrada' AND mesero_id IS NOT NULL ORDER BY creado_en DESC LIMIT 1",
+      `SELECT p.mesero_id
+         FROM pedidos p
+         JOIN usuarios u ON u.id = p.mesero_id AND u.rol = 'mesero'
+        WHERE p.mesa = $1 AND p.estado != 'cobrada'
+        ORDER BY p.creado_en DESC
+        LIMIT 1`,
       [mesa],
     );
 
     let finalMeseroId = mesaActiva[0]?.mesero_id ?? null;
     if (!finalMeseroId && meseroIdParam) {
-      const { rows: m } = await query("SELECT id FROM usuarios WHERE id = $1 AND rol IN ('mesero', 'admin')", [meseroIdParam]);
+      // SOLO se permite asignar a usuarios con rol 'mesero' (NUNCA a administradores)
+      const { rows: m } = await query("SELECT id FROM usuarios WHERE id = $1 AND rol = 'mesero'", [meseroIdParam]);
       if (m[0]) finalMeseroId = m[0].id;
     }
 
     // Asignación automática: si la mesa no tiene un mesero asignado previamente,
     // se le asigna de forma balanceada al mesero con menor carga activa de trabajo.
+    // NUNCA se asigna a usuarios administradores (solo a usuarios con rol 'mesero').
     if (!finalMeseroId) {
       const { rows: meseroAuto } = await query(`
         SELECT u.id
@@ -94,9 +101,6 @@ rutasPublicas.post(
       `);
       if (meseroAuto[0]) {
         finalMeseroId = meseroAuto[0].id;
-      } else {
-        const { rows: adminAuto } = await query("SELECT id FROM usuarios WHERE rol = 'admin' ORDER BY id ASC LIMIT 1");
-        if (adminAuto[0]) finalMeseroId = adminAuto[0].id;
       }
     }
 
