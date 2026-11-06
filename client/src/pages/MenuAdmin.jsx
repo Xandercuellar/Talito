@@ -4,37 +4,272 @@ import Dialogo from '../components/Dialogo.jsx';
 
 const VACIO = { id: null, nombre: '', categoriaId: '', precio: '', desc: '', disponible: true, foto: null };
 
-function FormCategoria({ onCreada, onCancelar }) {
-  const [nombre, setNombre] = useState('');
+function ModalCategorias({ abierto, onCerrar, onActualizado }) {
+  const [categorias, setCategorias] = useState([]);
+  const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
-  const [enviando, setEnviando] = useState(false);
+  const [msgOk, setMsgOk] = useState('');
 
-  async function enviar(e) {
-    e.preventDefault();
-    setError('');
-    setEnviando(true);
+  // Crear
+  const [nuevoNombre, setNuevoNombre] = useState('');
+  const [creando, setCreando] = useState(false);
+
+  // Editar
+  const [editandoId, setEditandoId] = useState(null);
+  const [editNombre, setEditNombre] = useState('');
+  const [guardandoId, setGuardandoId] = useState(null);
+
+  // Eliminar
+  const [confirmandoId, setConfirmandoId] = useState(null);
+  const [eliminandoId, setEliminandoId] = useState(null);
+
+  const cargar = useCallback(async () => {
     try {
-      await api('/admin/categorias', { method: 'POST', body: { nombre } });
-      onCreada(`Categoría «${nombre.trim()}» creada.`);
+      setCargando(true);
+      const cats = await api('/admin/categorias');
+      setCategorias(cats);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (abierto) {
+      setError('');
+      setMsgOk('');
+      setNuevoNombre('');
+      setEditandoId(null);
+      setConfirmandoId(null);
+      cargar();
+    }
+  }, [abierto, cargar]);
+
+  async function crear(e) {
+    e.preventDefault();
+    if (!nuevoNombre.trim() || creando) return;
+    setError('');
+    setMsgOk('');
+    setCreando(true);
+    try {
+      await api('/admin/categorias', { method: 'POST', body: { nombre: nuevoNombre.trim() } });
+      setNuevoNombre('');
+      setMsgOk('Categoría creada exitosamente.');
+      await cargar();
+      onActualizado();
     } catch (err) {
       setError(err.message);
-      setEnviando(false);
+    } finally {
+      setCreando(false);
+    }
+  }
+
+  async function guardarEdicion(id) {
+    if (!editNombre.trim() || guardandoId) return;
+    setError('');
+    setMsgOk('');
+    setGuardandoId(id);
+    try {
+      await api(`/admin/categorias/${id}`, { method: 'PUT', body: { nombre: editNombre.trim() } });
+      setEditandoId(null);
+      setMsgOk('Categoría actualizada.');
+      await cargar();
+      onActualizado();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setGuardandoId(null);
+    }
+  }
+
+  async function eliminar(cat) {
+    setError('');
+    setMsgOk('');
+    setEliminandoId(cat.id);
+    try {
+      await api(`/admin/categorias/${cat.id}`, { method: 'DELETE' });
+      setConfirmandoId(null);
+      setMsgOk(`Categoría «${cat.nombre}» eliminada.`);
+      await cargar();
+      onActualizado();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEliminandoId(null);
     }
   }
 
   return (
-    <form onSubmit={enviar}>
-      {error && <div className="error-msg" role="alert">{error}</div>}
-      <div className="campo">
-        <label htmlFor="c-nombre">Nombre de la categoría</label>
-        <input id="c-nombre" type="text" maxLength={60} required autoFocus placeholder="Ej. Desayunos" value={nombre} onChange={(e) => setNombre(e.target.value)} />
-        <small>Aparecerá en el menú del cliente en cuanto tenga al menos un platillo disponible.</small>
+    <Dialogo abierto={abierto} onCerrar={onCerrar} titulo="Categorías del Menú">
+      <div style={{ minWidth: 'min(100%, 500px)', maxWidth: '100%' }}>
+        {error && <div className="error-msg" role="alert" style={{ marginBottom: 12 }}>{error}</div>}
+        {msgOk && <p className="badge ok msg-ok" role="status" style={{ marginBottom: 12, display: 'block' }}>{msgOk}</p>}
+
+        {/* Crear nueva categoría */}
+        <form onSubmit={crear} style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <input
+            type="text"
+            maxLength={60}
+            required
+            placeholder="Nueva categoría (ej. Bebidas, Postres)…"
+            value={nuevoNombre}
+            disabled={creando}
+            onChange={(e) => setNuevoNombre(e.target.value)}
+            style={{ flex: 1, minHeight: '38px', padding: '0 12px', border: '1px solid var(--line)', borderRadius: '6px' }}
+          />
+          <button
+            type="submit"
+            className="btn btn-primary btn-sm"
+            disabled={creando || !nuevoNombre.trim()}
+            style={{ whiteSpace: 'nowrap' }}
+          >
+            {creando ? 'Creando…' : '+ Agregar'}
+          </button>
+        </form>
+
+        {/* Lista de categorías */}
+        <div style={{ maxHeight: '350px', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: '8px', padding: '6px', background: '#fafafa' }}>
+          {cargando && categorias.length === 0 ? (
+            <p className="cargando" style={{ padding: '20px 0' }}>Cargando categorías…</p>
+          ) : categorias.length === 0 ? (
+            <p className="vacio" style={{ padding: '20px 0' }}>No hay categorías registradas.</p>
+          ) : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {categorias.map((c) => {
+                const esEditando = editandoId === c.id;
+                const esConfirmando = confirmandoId === c.id;
+                const count = c.platillos_count ?? 0;
+
+                if (esEditando) {
+                  return (
+                    <li key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#fff', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px' }}>
+                      <input
+                        type="text"
+                        maxLength={60}
+                        required
+                        autoFocus
+                        value={editNombre}
+                        onChange={(e) => setEditNombre(e.target.value)}
+                        style={{ flex: 1, minHeight: '34px', padding: '0 8px', border: '1px solid var(--line)', borderRadius: 4 }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        disabled={guardandoId === c.id || !editNombre.trim()}
+                        onClick={() => guardarEdicion(c.id)}
+                      >
+                        {guardandoId === c.id ? 'Guardando…' : 'Guardar'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        disabled={guardandoId === c.id}
+                        onClick={() => setEditandoId(null)}
+                      >
+                        Cancelar
+                      </button>
+                    </li>
+                  );
+                }
+
+                return (
+                  <li key={c.id} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                        <strong style={{ fontSize: '0.98rem', color: 'var(--ink)' }}>{c.nombre}</strong>
+                        <span style={{ fontSize: '0.78rem', color: count > 0 ? 'var(--muted)' : '#b45309', background: count > 0 ? '#f1f5f9' : '#fef3c7', padding: '2px 8px', borderRadius: 12, fontWeight: 600 }}>
+                          {count} {count === 1 ? 'platillo' : 'platillos'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          style={{ padding: '0 10px', minHeight: '30px', fontSize: '0.82rem' }}
+                          onClick={() => {
+                            setEditandoId(c.id);
+                            setEditNombre(c.nombre);
+                            setConfirmandoId(null);
+                            setError('');
+                          }}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-peligro"
+                          style={{ padding: '0 10px', minHeight: '30px', fontSize: '0.82rem' }}
+                          onClick={() => {
+                            setConfirmandoId(esConfirmando ? null : c.id);
+                            setEditandoId(null);
+                            setError('');
+                          }}
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+
+                    {esConfirmando && (
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--line)' }}>
+                        {count > 0 ? (
+                          <div>
+                            <p style={{ margin: '0 0 6px 0', fontSize: '0.84rem', color: 'var(--chile)', fontWeight: 600 }}>
+                              ⚠ Esta categoría contiene {count} platillo(s). Mueve o elimina sus platillos antes de poder borrarla.
+                            </p>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-ghost"
+                              style={{ minHeight: '26px', fontSize: '0.78rem' }}
+                              onClick={() => setConfirmandoId(null)}
+                            >
+                              Entendido
+                            </button>
+                          </div>
+                        ) : (
+                          <div>
+                            <p style={{ margin: '0 0 6px 0', fontSize: '0.86rem', color: 'var(--ink)' }}>
+                              ¿Confirmas eliminar la categoría <strong>«{c.nombre}»</strong>?
+                            </p>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-peligro"
+                                style={{ minHeight: '30px', padding: '0 12px' }}
+                                disabled={eliminandoId === c.id}
+                                onClick={() => eliminar(c)}
+                              >
+                                {eliminandoId === c.id ? 'Eliminando…' : 'Sí, eliminar'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                style={{ minHeight: '30px', padding: '0 12px' }}
+                                disabled={eliminandoId === c.id}
+                                onClick={() => setConfirmandoId(null)}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="dlg-acciones" style={{ marginTop: 14 }}>
+          <button type="button" className="btn btn-ghost" onClick={onCerrar}>
+            Cerrar
+          </button>
+        </div>
       </div>
-      <div className="dlg-acciones">
-        <button type="button" className="btn btn-ghost" onClick={onCancelar}>Cancelar</button>
-        <button type="submit" className="btn btn-primary" disabled={enviando}>{enviando ? 'Creando…' : 'Crear categoría'}</button>
-      </div>
-    </form>
+    </Dialogo>
   );
 }
 
@@ -172,7 +407,7 @@ export default function MenuAdmin() {
   const [error, setError] = useState('');
   const [ok, setOk] = useState('');
   const [editando, setEditando] = useState(null); // null = cerrado
-  const [nuevaCat, setNuevaCat] = useState(false);
+  const [verCategorias, setVerCategorias] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
@@ -196,8 +431,12 @@ export default function MenuAdmin() {
           <p>{platillos.length} platillos registrados.</p>
         </div>
         <div className="ad-acciones">
-          <button type="button" className="btn btn-ghost" onClick={() => { setOk(''); setNuevaCat(true); }}>Nueva categoría</button>
-          <button type="button" className="btn btn-primary" onClick={() => { setOk(''); setEditando(VACIO); }}>Nuevo platillo</button>
+          <button type="button" className="btn btn-ghost" onClick={() => { setOk(''); setVerCategorias(true); }}>
+            Ver categorías
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => { setOk(''); setEditando(VACIO); }}>
+            Nuevo platillo
+          </button>
         </div>
       </div>
 
@@ -225,12 +464,11 @@ export default function MenuAdmin() {
         ))}
       </ul>
 
-      <Dialogo abierto={nuevaCat} onCerrar={() => setNuevaCat(false)} titulo="Nueva categoría">
-        <FormCategoria
-          onCancelar={() => setNuevaCat(false)}
-          onCreada={(msg) => { setNuevaCat(false); setOk(msg); cargar(); }}
-        />
-      </Dialogo>
+      <ModalCategorias
+        abierto={verCategorias}
+        onCerrar={() => setVerCategorias(false)}
+        onActualizado={cargar}
+      />
 
       <Dialogo abierto={editando !== null} onCerrar={() => setEditando(null)} titulo={editando?.id ? 'Editar platillo' : 'Nuevo platillo'}>
         {editando && (

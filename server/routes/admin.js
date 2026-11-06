@@ -81,7 +81,14 @@ rutasAdmin.get('/metricas', async (_req, res) => {
 /* ---------- Menú ---------- */
 
 rutasAdmin.get('/categorias', async (_req, res) => {
-  const { rows } = await query('SELECT id, nombre FROM categorias ORDER BY orden');
+  const { rows } = await query(
+    `SELECT c.id, c.nombre, c.slug, c.orden,
+            COUNT(p.id)::int AS platillos_count
+       FROM categorias c
+       LEFT JOIN platillos p ON p.categoria_id = c.id
+      GROUP BY c.id, c.nombre, c.slug, c.orden
+      ORDER BY c.orden, c.id`,
+  );
   res.json(rows);
 });
 
@@ -122,6 +129,49 @@ rutasAdmin.post('/categorias', async (req, res) => {
     [nombre, slug],
   );
   res.status(201).json(rows[0]);
+});
+
+rutasAdmin.put('/categorias/:id', async (req, res) => {
+  const id = entero(req.params.id, 'id', 1, 2_000_000_000);
+  const nombre = texto(req.body?.nombre, 'nombre', 60);
+
+  const { rows: act } = await query('SELECT id FROM categorias WHERE id = $1', [id]);
+  if (!act[0]) throw new ErrorHttp(404, 'La categoría no existe.');
+
+  const { rows: dup } = await query(
+    'SELECT 1 FROM categorias WHERE lower(nombre) = lower($1) AND id != $2',
+    [nombre, id],
+  );
+  if (dup[0]) throw new ErrorHttp(409, 'Ya existe otra categoría con ese nombre.');
+
+  const base =
+    nombre.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'categoria';
+  let slug = base;
+  for (let n = 2; (await query('SELECT 1 FROM categorias WHERE slug = $1 AND id != $2', [slug, id])).rows[0]; n++) {
+    slug = `${base}-${n}`;
+  }
+
+  await query('UPDATE categorias SET nombre = $1, slug = $2 WHERE id = $3', [nombre, slug, id]);
+  res.json({ ok: true, id, nombre, slug });
+});
+
+rutasAdmin.delete('/categorias/:id', async (req, res) => {
+  const id = entero(req.params.id, 'id', 1, 2_000_000_000);
+
+  const { rows: act } = await query('SELECT nombre FROM categorias WHERE id = $1', [id]);
+  if (!act[0]) throw new ErrorHttp(404, 'La categoría no existe.');
+
+  const { rows: platos } = await query('SELECT count(*)::int AS n FROM platillos WHERE categoria_id = $1', [id]);
+  if (platos[0].n > 0) {
+    throw new ErrorHttp(
+      409,
+      `No se puede eliminar la categoría «${act[0].nombre}» porque tiene ${platos[0].n} platillo(s) asociado(s). Mueve o elimina los platillos primero.`,
+    );
+  }
+
+  await query('DELETE FROM categorias WHERE id = $1', [id]);
+  res.json({ ok: true, mensaje: `Categoría «${act[0].nombre}» eliminada.` });
 });
 
 function leerPlatillo(body) {
